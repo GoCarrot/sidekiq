@@ -92,6 +92,7 @@ module Sidekiq
       payloads.collect { |payload| payload['jid'] }
     end
 
+
     # Allows sharding of jobs across any number of Redis instances.  All jobs
     # defined within the block will use the given Redis connection pool.
     #
@@ -113,7 +114,27 @@ module Sidekiq
       Thread.current[:sidekiq_via_pool] = nil
     end
 
+    def backend
+      @backend ||= Sidekiq::Backend::Redis.new
+    end
+
+    ##
+    # Set a custom backend for job queuing.  The object given must respond to
+    # #raw_push, taking an array of jobs to be enqueued.
+    def backend=(custom_backend)
+      @backend = custom_backend
+    end
+
     class << self
+      def default
+        @default ||= new
+      end
+
+      # deprecated
+      def registered_workers
+        puts "registered_workers is deprecated, please use Sidekiq::Workers.new"
+        Sidekiq.redis { |x| x.smembers('workers') }
+      end
 
       def push(item)
         new.push(item)
