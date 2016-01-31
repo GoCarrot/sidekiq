@@ -1,24 +1,31 @@
 module Sidekiq
   module Backend
     class Redis
-      def raw_push(payloads)
-        pushed = false
-        Sidekiq.redis do |conn|
-          if payloads.first['at']
-            pushed = conn.zadd('schedule', payloads.map do |hash|
-              at = hash.delete('at').to_s
-              [at, Sidekiq.dump_json(hash)]
-            end)
-          else
-            q = payloads.first['queue']
-            to_push = payloads.map { |entry| Sidekiq.dump_json(entry) }
-            _, pushed = conn.multi do
-              conn.sadd('queues', q)
-              conn.lpush("queue:#{q}", to_push)
-            end
+      def atomic_push(conn, payloads)
+        if payloads.first['at']
+          conn.zadd('schedule'.freeze, payloads.map do |hash|
+            at = hash.delete('at'.freeze).to_s
+            [at, Sidekiq.dump_json(hash)]
+          end)
+        else
+          q = payloads.first['queue']
+          now = Time.now.to_f
+          to_push = payloads.map do |entry|
+            entry['enqueued_at'.freeze] = now
+            Sidekiq.dump_json(entry)
+          end
+          conn.sadd('queues'.freeze, q)
+          conn.lpush("queue:#{q}", to_push)
+        end
+      end
+
+      def raw_push(payloads, redis_pool)
+        redis_pool.with do |conn|
+          conn.multi do
+            atomic_push(conn, payloads)
           end
         end
-        pushed
+        true
       end
     end
   end

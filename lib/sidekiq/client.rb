@@ -188,7 +188,7 @@ module Sidekiq
     private
 
     def raw_push(payloads)
-      backend.raw_push(payloads)
+      backend.raw_push(payloads, @redis_pool)
       true
     end
 
