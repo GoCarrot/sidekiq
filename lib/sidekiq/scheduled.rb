@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require 'sidekiq'
 require 'sidekiq/util'
 require 'sidekiq/api'
@@ -45,6 +46,7 @@ module Sidekiq
         @enq = (Sidekiq.options[:scheduled_enq] || Sidekiq::Scheduled::Enq).new
         @sleeper = ConnectionPool::TimedStack.new
         @done = false
+        @thread = nil
       end
 
       # Shut down this instance, will pause until the thread is dead.
@@ -77,7 +79,9 @@ module Sidekiq
           # Most likely a problem with redis networking.
           # Punt and try again at the next interval
           logger.error ex.message
-          logger.error ex.backtrace.first
+          ex.backtrace.each do |bt|
+            logger.error(bt)
+          end
         end
       end
 
@@ -86,6 +90,13 @@ module Sidekiq
       def wait
         @sleeper.pop(random_poll_interval)
       rescue Timeout::Error
+        # expected
+      rescue => ex
+        # if poll_interval_average hasn't been calculated yet, we can
+        # raise an error trying to reach Redis.
+        logger.error ex.message
+        logger.error ex.backtrace.first
+        sleep 5
       end
 
       # Calculates a random interval that is ±50% the desired average.

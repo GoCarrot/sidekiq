@@ -4,6 +4,114 @@ Sidekiq Pro Changelog
 Please see [http://sidekiq.org/](http://sidekiq.org/) for more details and how to buy.
 
 HEAD
+---------
+
+- Don't display "Delete/Retry All" buttons when filtering in Web UI, #3243
+
+3.4.0
+---------
+
+- Introducing the newest reliable fetching algorithm: `super_fetch`!  This
+  algorithm will replace reliable\_fetch in Pro 4.0.  super\_fetch is
+  bullet-proof across all environments, no longer requiring stable
+  hostnames or an index to be set per-process. [#3077]
+```ruby
+Sidekiq.configure_server do |config|
+  config.super_fetch!
+end
+```
+  Thank you to @jonhyman for code review and the Sidekiq Pro customers that
+  beta tested super\_fetch.
+
+3.3.3
+---------
+
+- Update Web UI extension to work with Sidekiq 4.2.0's new Web UI. [#3075]
+
+3.3.2
+---------
+
+- Minimize batch memory usage after success [#3083]
+- Extract batch's 24 hr linger expiry to a LINGER constant so it can be tuned. [#3011]
+
+3.3.1
+---------
+
+- If environment is unset, treat it as development so reliable\_fetch works as before 3.2.2.
+
+3.3.0
+---------
+
+- Don't delete batches immediately upon success but set a 24 hr expiry, this allows
+  Sidekiq::Batch::Status#poll to work, even after batch success. [#3011]
+- New `Sidekiq::PendingSet#destroy(jid)` API to remove poison pill jobs [#3015]
+
+3.2.2
+---------
+
+- A default value for -i is only set in development now, staging or
+  other environments must set an index if you wish to use reliable\_fetch. [#2971]
+- Fix nil dereference when checking for jobs over timeout in timed\_fetch
+
+
+3.2.1
+---------
+
+- timed\_fetch now works with namespaces.  [ryansch]
+
+
+3.2.0
+---------
+
+- Fixed detection of missing batches, `NoSuchBatch` should be raised
+  properly now if `Sidekiq::Batch.new(bid)` is called on a batch no
+  longer in Redis.
+- Remove support for Pro 1.x format batches.  This version will no
+  longer seamlessly process batches created with Sidekiq Pro 1.x.
+  As always, upgrade one major version at a time to ensure a smooth
+  transition.
+- Fix edge case where a parent batch could expire before a child batch
+  was finished processing, leading to missing batches [#2889]
+
+2.1.5
+---------
+
+- Fix edge case where a parent batch could expire before a child batch
+  was finished processing, leading to missing batches [#2889]
+
+3.1.0
+---------
+
+- New container-friendly fetch algorithm: `timed_fetch`.  See the
+  [wiki documentation](https://github.com/mperham/sidekiq/wiki/Pro-Reliability-Server)
+  for trade offs between the two reliability options.  You should
+  use this if you are on Heroku, Docker, Amazon ECS or EBS or
+  another container-based system.
+
+
+3.0.6
+---------
+
+- Fix race condition on reliable fetch shutdown
+
+3.0.5
+---------
+
+- Statsd metrics now account for ActiveJob class names
+- Allow reliable fetch internals to be overridden [jonhyman]
+
+3.0.4
+---------
+
+- Queue pausing no longer requires reliable fetch. [#2786]
+
+3.0.3, 2.1.4
+------------
+
+- Convert Lua-based `Sidekiq::Queue#delete_by_class` to Ruby-based, to
+  avoid O(N^2) performance and possible Redis failure. [#2806]
+
+3.0.2
 -----------
 
 - Make job registration with batch part of the atomic push so batch

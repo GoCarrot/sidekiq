@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require 'sidekiq/util'
 require 'sidekiq/fetch'
 require 'thread'
@@ -35,6 +36,8 @@ module Sidekiq
       @job = nil
       @thread = nil
       @strategy = (mgr.options[:fetch] || Sidekiq::BasicFetch).new(mgr.options)
+      @reloader = Sidekiq.options[:reloader]
+      @executor = Sidekiq.options[:executor]
     end
 
     def terminate(wait=false)
@@ -110,6 +113,7 @@ module Sidekiq
         end
       end
       sleep(1)
+      nil
     end
 
     def process(work)
@@ -118,28 +122,32 @@ module Sidekiq
 
       ack = false
       begin
-        job = Sidekiq.load_json(jobstr)
-        klass  = job['class'.freeze].constantize
-        worker = klass.new
-        worker.jid = job['jid'.freeze]
+        job_hash = Sidekiq.load_json(jobstr)
+        @reloader.call do
+          klass  = job_hash['class'.freeze].constantize
+          worker = klass.new
+          worker.jid = job_hash['jid'.freeze]
 
-        stats(worker, job, queue) do
-          Sidekiq.server_middleware.invoke(worker, job, queue) do
-            # Only ack if we either attempted to start this job or
-            # successfully completed it. This prevents us from
-            # losing jobs if a middleware raises an exception before yielding
-            ack = true
-            execute_job(worker, cloned(job['args'.freeze]))
+          stats(worker, job_hash, queue) do
+            Sidekiq.server_middleware.invoke(worker, job_hash, queue) do
+              @executor.call do
+                # Only ack if we either attempted to start this job or
+                # successfully completed it. This prevents us from
+                # losing jobs if a middleware raises an exception before yielding
+                ack = true
+                execute_job(worker, cloned(job_hash['args'.freeze]))
+              end
+            end
           end
+          ack = true
         end
-        ack = true
       rescue Sidekiq::Shutdown
         # Had to force kill this job because it didn't finish
         # within the timeout.  Don't acknowledge the work since
         # we didn't properly finish it.
         ack = false
       rescue Exception => ex
-        handle_exception(ex, job || { :job => jobstr })
+        handle_exception(ex, { :context => "Job raised exception", :job => job_hash, :jobstr => jobstr })
         raise
       ensure
         work.acknowledge if ack
@@ -158,9 +166,9 @@ module Sidekiq
     PROCESSED = Concurrent::AtomicFixnum.new
     FAILURE = Concurrent::AtomicFixnum.new
 
-    def stats(worker, job, queue)
+    def stats(worker, job_hash, queue)
       tid = thread_identity
-      WORKER_STATE[tid] = {:queue => queue, :payload => job, :run_at => Time.now.to_i }
+      WORKER_STATE[tid] = {:queue => queue, :payload => cloned(job_hash), :run_at => Time.now.to_i }
 
       begin
         yield

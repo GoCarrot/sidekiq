@@ -12,22 +12,9 @@ require_relative '../lib/sidekiq/launcher'
 
 include Sidekiq::Util
 
-# brew tap shopify/shopify
-# brew install toxiproxy
-# gem install toxiproxy
-require 'toxiproxy'
-# simulate a non-localhost network for realer-world conditions.
-# adding 1ms of network latency has an ENORMOUS impact on benchmarks
-Toxiproxy.populate([{
-    "name": "redis",
-    "listen": "127.0.0.1:6380",
-    "upstream": "127.0.0.1:6379"
-}])
-
-
 Sidekiq.configure_server do |config|
-  config.redis = { db: 13, port: 6380 }
-  #config.redis = { db: 13 }
+  #config.options[:concurrency] = 1
+  config.redis = { driver: :hiredis, db: 13, port: 6380 }
   config.options[:queues] << 'default'
   config.logger.level = Logger::ERROR
   config.average_scheduled_poll_interval = 2

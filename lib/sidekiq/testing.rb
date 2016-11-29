@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require 'securerandom'
 require 'sidekiq'
 
@@ -68,7 +69,9 @@ module Sidekiq
     def raw_push(payloads)
       if Sidekiq::Testing.fake?
         payloads.each do |job|
-          Queues.push(job['queue'], job['class'], Sidekiq.load_json(Sidekiq.dump_json(job)))
+          job = Sidekiq.load_json(Sidekiq.dump_json(job))
+          job.merge!('enqueued_at' => Time.now.to_f) unless job['at']
+          Queues.push(job['queue'], job['class'], job)
         end
         true
       elsif Sidekiq::Testing.inline?
@@ -263,7 +266,7 @@ module Sidekiq
       def drain
         while jobs.any?
           next_job = jobs.first
-          Queues.delete_for(next_job["jid"], queue, self.to_s)
+          Queues.delete_for(next_job["jid"], next_job["queue"], self.to_s)
           process_job(next_job)
         end
       end

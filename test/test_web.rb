@@ -1,11 +1,10 @@
 # encoding: utf-8
+# frozen_string_literal: true
 require_relative 'helper'
 require 'sidekiq/web'
 require 'rack/test'
-require 'tilt/erubis'
 
 class TestWeb < Sidekiq::Test
-
   describe 'sidekiq web' do
     include Rack::Test::Methods
 
@@ -27,6 +26,11 @@ class TestWeb < Sidekiq::Test
       def perform(a, b)
         a + b
       end
+    end
+
+    it 'can configure via set() syntax' do
+      app.set(:session_secret, "foo")
+      assert_equal "foo", app.session_secret
     end
 
     it 'can show text with any locales' do
@@ -306,7 +310,7 @@ class TestWeb < Sidekiq::Test
     it 'calls updatePage() once when polling' do
       get '/busy?poll=true'
       assert_equal 200, last_response.status
-      assert_equal 1, last_response.body.scan('updatePage(').count
+      assert_equal 1, last_response.body.scan('data-poll-path="/busy').count
     end
 
     it 'escape job args and error messages' do
@@ -340,7 +344,6 @@ class TestWeb < Sidekiq::Test
       assert last_response.body.include?( "&lt;a&gt;hello&lt;&#x2F;a&gt;" )
       assert !last_response.body.include?( "<a>hello</a>" )
 
-
       # on /queues page
       params = add_xss_retry # sorry, don't know how to easily make this show up on queues page otherwise.
       post "/retries/#{job_params(*params)}", 'retry' => 'Retry'
@@ -373,7 +376,7 @@ class TestWeb < Sidekiq::Test
       before do
         Sidekiq::Web.settings.locales << File.join(File.dirname(__FILE__), "fixtures")
         Sidekiq::Web.tabs['Custom Tab'] = '/custom'
-        Sidekiq::Web.get('/custom') do
+        Sidekiq::WebApplication.get('/custom') do
           clear_caches # ugly hack since I can't figure out how to access WebHelpers outside of this context
           t('translated_text')
         end
@@ -386,6 +389,7 @@ class TestWeb < Sidekiq::Test
 
       it 'can show user defined tab with custom locales' do
         get '/custom'
+
         assert_match(/Changed text/, last_response.body)
       end
     end
@@ -410,73 +414,26 @@ class TestWeb < Sidekiq::Test
         2.times { add_retry }
         3.times { add_scheduled }
         4.times { add_worker }
+      end
 
+      it 'works' do
         get '/stats'
         @response = Sidekiq.load_json(last_response.body)
-      end
-
-      it 'can refresh dashboard stats' do
         assert_equal 200, last_response.status
-      end
-
-      describe "for sidekiq" do
-        it 'are namespaced' do
-          assert_includes @response.keys, "sidekiq"
-        end
-
-        it 'reports processed' do
-          assert_equal 5, @response["sidekiq"]["processed"]
-        end
-
-        it 'reports failed' do
-          assert_equal 2, @response["sidekiq"]["failed"]
-        end
-
-        it 'reports busy' do
-          assert_equal 4, @response["sidekiq"]["busy"]
-        end
-
-        it 'reports processes' do
-          assert_equal 1, @response["sidekiq"]["processes"]
-        end
-
-        it 'reports retries' do
-          assert_equal 2, @response["sidekiq"]["retries"]
-        end
-
-        it 'reports scheduled' do
-          assert_equal 3, @response["sidekiq"]["scheduled"]
-        end
-
-        it 'reports latency' do
-          assert_equal 0, @response["sidekiq"]["default_latency"]
-        end
-      end
-
-      describe "for redis" do
-        it 'are namespaced' do
-          assert_includes @response.keys, "redis"
-        end
-
-        it 'reports version' do
-          assert_includes @response["redis"].keys, "redis_version"
-        end
-
-        it 'reports uptime' do
-          assert_includes @response["redis"].keys, "uptime_in_days"
-        end
-
-        it 'reports connected clients' do
-          assert_includes @response["redis"].keys, "connected_clients"
-        end
-
-        it 'reports user memory' do
-          assert_includes @response["redis"].keys, "used_memory_human"
-        end
-
-        it 'reports memory peak' do
-          assert_includes @response["redis"].keys, "used_memory_peak_human"
-        end
+        assert_includes @response.keys, "sidekiq"
+        assert_equal 5, @response["sidekiq"]["processed"]
+        assert_equal 2, @response["sidekiq"]["failed"]
+        assert_equal 4, @response["sidekiq"]["busy"]
+        assert_equal 1, @response["sidekiq"]["processes"]
+        assert_equal 2, @response["sidekiq"]["retries"]
+        assert_equal 3, @response["sidekiq"]["scheduled"]
+        assert_equal 0, @response["sidekiq"]["default_latency"]
+        assert_includes @response.keys, "redis"
+        assert_includes @response["redis"].keys, "redis_version"
+        assert_includes @response["redis"].keys, "uptime_in_days"
+        assert_includes @response["redis"].keys, "connected_clients"
+        assert_includes @response["redis"].keys, "used_memory_human"
+        assert_includes @response["redis"].keys, "used_memory_peak_human"
       end
     end
 
@@ -563,6 +520,7 @@ class TestWeb < Sidekiq::Test
       Sidekiq.redis do |conn|
         conn.zadd('retry', score, Sidekiq.dump_json(msg))
       end
+
       [msg, score]
     end
 
@@ -595,6 +553,7 @@ class TestWeb < Sidekiq::Test
       Sidekiq.redis do |conn|
         conn.zadd('retry', score, Sidekiq.dump_json(msg))
       end
+
       [msg, score]
     end
 
@@ -607,6 +566,113 @@ class TestWeb < Sidekiq::Test
           conn.hmset(key, 'info', Sidekiq.dump_json('hostname' => 'foo', 'started_at' => Time.now.to_f, "queues" => []), 'at', Time.now.to_f, 'busy', 4)
           conn.hmset("#{key}:workers", Time.now.to_f, msg)
         end
+      end
+    end
+  end
+
+  describe 'sidekiq web with basic auth' do
+    include Rack::Test::Methods
+
+    def app
+      app = Sidekiq::Web.new
+      app.use(Rack::Auth::Basic) { |user, pass| user == "a" && pass == "b" }
+
+      app
+    end
+
+    it 'requires basic authentication' do
+      get '/'
+
+      assert_equal 401, last_response.status
+      refute_nil last_response.header["WWW-Authenticate"]
+    end
+
+    it 'authenticates successfuly' do
+      basic_authorize 'a', 'b'
+
+      get '/'
+
+      assert_equal 200, last_response.status
+    end
+  end
+
+  describe 'sidekiq web with custom session' do
+    include Rack::Test::Methods
+
+    def app
+      app = Sidekiq::Web.new
+
+      app.use Rack::Session::Cookie, secret: 'v3rys3cr31', host: 'nicehost.org'
+
+      app
+    end
+
+    it 'requires basic authentication' do
+      get '/'
+
+      session_options = last_request.env['rack.session'].options
+
+      assert_equal 'v3rys3cr31', session_options[:secret]
+      assert_equal 'nicehost.org', session_options[:host]
+    end
+  end
+
+  describe 'sidekiq web sessions options' do
+    include Rack::Test::Methods
+
+    describe 'using #disable' do
+      def app
+        app = Sidekiq::Web.new
+        app.disable(:sessions)
+        app
+      end
+
+      it "doesn't create sessions" do
+        get '/'
+        assert_nil last_request.env['rack.session']
+      end
+    end
+
+    describe 'using #set with false argument' do
+      def app
+        app = Sidekiq::Web.new
+        app.set(:sessions, false)
+        app
+      end
+
+      it "doesn't create sessions" do
+        get '/'
+        assert_nil last_request.env['rack.session']
+      end
+    end
+
+    describe 'using #set with an hash' do
+      def app
+        app = Sidekiq::Web.new
+        app.set(:sessions, { domain: :all })
+        app
+      end
+
+      it "creates sessions" do
+        get '/'
+        refute_nil   last_request.env['rack.session']
+        refute_empty last_request.env['rack.session'].options
+        assert_equal :all, last_request.env['rack.session'].options[:domain]
+      end
+    end
+
+    describe 'using #enable' do
+      def app
+        app = Sidekiq::Web.new
+        app.enable(:sessions)
+        app
+      end
+
+      it "creates sessions" do
+        get '/'
+        refute_nil   last_request.env['rack.session']
+        refute_empty last_request.env['rack.session'].options
+        refute_nil   last_request.env['rack.session'].options[:secret]
       end
     end
   end

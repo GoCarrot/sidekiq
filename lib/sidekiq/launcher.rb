@@ -1,4 +1,5 @@
 # encoding: utf-8
+# frozen_string_literal: true
 require 'sidekiq/manager'
 require 'sidekiq/fetch'
 require 'sidekiq/scheduled'
@@ -62,15 +63,16 @@ module Sidekiq
 
     JVM_RESERVED_SIGNALS = ['USR1', 'USR2'] # Don't Process#kill if we get these signals via the API
 
-    def heartbeat(k, data, json)
-      results = Sidekiq::CLI::PROCTITLES.map {|x| x.(self, data) }
+    def heartbeat
+      results = Sidekiq::CLI::PROCTITLES.map {|x| x.(self, to_data) }
       results.compact!
       $0 = results.join(' ')
 
-      ❤(k, json)
+      ❤
     end
 
-    def ❤(key, json)
+    def ❤
+      key = identity
       fails = procd = 0
       begin
         Processor::FAILURE.update {|curr| fails = curr; 0 }
@@ -79,7 +81,7 @@ module Sidekiq
         workers_key = "#{key}:workers".freeze
         nowdate = Time.now.utc.strftime("%Y-%m-%d".freeze)
         Sidekiq.redis do |conn|
-          conn.pipelined do
+          conn.multi do
             conn.incrby("stat:processed".freeze, procd)
             conn.incrby("stat:processed:#{nowdate}", procd)
             conn.incrby("stat:failed".freeze, fails)
@@ -88,18 +90,23 @@ module Sidekiq
             Processor::WORKER_STATE.each_pair do |tid, hash|
               conn.hset(workers_key, tid, Sidekiq.dump_json(hash))
             end
+            conn.expire(workers_key, 60)
           end
         end
         fails = procd = 0
 
-        _, _, _, msg = Sidekiq.redis do |conn|
-          conn.pipelined do
+        _, exists, _, _, msg = Sidekiq.redis do |conn|
+          conn.multi do
             conn.sadd('processes', key)
-            conn.hmset(key, 'info', json, 'busy', Processor::WORKER_STATE.size, 'beat', Time.now.to_f, 'quiet', @done)
+            conn.exists(key)
+            conn.hmset(key, 'info', to_json, 'busy', Processor::WORKER_STATE.size, 'beat', Time.now.to_f, 'quiet', @done)
             conn.expire(key, 60)
             conn.rpop("#{key}-signals")
           end
         end
+
+        # first heartbeat or recovering from an outage and need to reestablish our heartbeat
+        fire_event(:heartbeat) if !exists
 
         return unless msg
 
@@ -118,26 +125,34 @@ module Sidekiq
     end
 
     def start_heartbeat
-      k = identity
-      data = {
-        'hostname' => hostname,
-        'started_at' => Time.now.to_f,
-        'pid' => $$,
-        'tag' => @options[:tag] || '',
-        'concurrency' => @options[:concurrency],
-        'queues' => @options[:queues].uniq,
-        'labels' => @options[:labels],
-        'identity' => k,
-      }
-      # this data doesn't change so dump it to a string
-      # now so we don't need to dump it every heartbeat.
-      json = Sidekiq.dump_json(data)
-
       while true
-        heartbeat(k, data, json)
+        heartbeat
         sleep 5
       end
       Sidekiq.logger.info("Heartbeat stopping...")
+    end
+
+    def to_data
+      @data ||= begin
+        {
+          'hostname' => hostname,
+          'started_at' => Time.now.to_f,
+          'pid' => $$,
+          'tag' => @options[:tag] || '',
+          'concurrency' => @options[:concurrency],
+          'queues' => @options[:queues].uniq,
+          'labels' => @options[:labels],
+          'identity' => identity,
+        }
+      end
+    end
+
+    def to_json
+      @json ||= begin
+        # this data changes infrequently so dump it to a string
+        # now so we don't need to dump it every heartbeat.
+        Sidekiq.dump_json(to_data)
+      end
     end
 
     def clear_heartbeat

@@ -1,4 +1,5 @@
 # encoding: utf-8
+# frozen_string_literal: true
 $stdout.sync = true
 
 require 'yaml'
@@ -65,12 +66,13 @@ module Sidekiq
       logger.info Sidekiq::LICENSE
       logger.info "Upgrade to Sidekiq Pro for more features and support: http://sidekiq.org" unless defined?(::Sidekiq::Pro)
 
-      Sidekiq.redis do |conn|
-        # touch the connection pool so it is created before we
-        # fire startup and start multithreading.
-        ver = conn.info['redis_version']
-        raise "You are using Redis v#{ver}, Sidekiq requires Redis v2.8.0 or greater" if ver < '2.8'
-      end
+      # touch the connection pool so it is created before we
+      # fire startup and start multithreading.
+      ver = Sidekiq.redis_info['redis_version']
+      raise "You are using Redis v#{ver}, Sidekiq requires Redis v2.8.0 or greater" if ver < '2.8'
+
+      # Touch middleware so it isn't lazy loaded by multiple threads, #3043
+      Sidekiq.server_middleware
 
       # Before this point, the process is initializing with just the main thread.
       # Starting here the process will now have multiple threads running.
@@ -206,6 +208,8 @@ module Sidekiq
       opts = parse_config(cfile).merge(opts) if cfile
 
       opts[:strict] = true if opts[:strict].nil?
+      opts[:concurrency] = Integer(ENV["RAILS_MAX_THREADS"]) if !opts[:concurrency] && ENV["RAILS_MAX_THREADS"]
+      opts[:identity] = identity
 
       options.merge!(opts)
     end
@@ -225,18 +229,26 @@ module Sidekiq
           require 'sidekiq/rails'
           require File.expand_path("#{options[:require]}/config/environment.rb")
           ::Rails.application.eager_load!
-        else
+        elsif ::Rails::VERSION::MAJOR == 4
           # Painful contortions, see 1791 for discussion
+          # No autoloading, we want to force eager load for everything.
           require File.expand_path("#{options[:require]}/config/application.rb")
           ::Rails::Application.initializer "sidekiq.eager_load" do
             ::Rails.application.config.eager_load = true
           end
           require 'sidekiq/rails'
           require File.expand_path("#{options[:require]}/config/environment.rb")
+        else
+          # Rails 5+ && development mode, use Reloader
+          require 'sidekiq/rails'
+          require File.expand_path("#{options[:require]}/config/environment.rb")
         end
         options[:tag] ||= default_tag
       else
-        require options[:require]
+        not_required_message = "#{options[:require]} was not required, you should use an explicit path: " +
+            "./#{options[:require]} or /path/to/#{options[:require]}"
+
+        require(options[:require]) || raise(ArgumentError, not_required_message)
       end
     end
 

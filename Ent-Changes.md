@@ -3,6 +3,66 @@ Sidekiq Enterprise Changelog
 
 Please see [http://sidekiq.org/](http://sidekiq.org/) for more details and how to buy.
 
+HEAD
+-------------
+
+- Add new web authorization API [#3251]
+- Update all sidekiqswarm env vars to use SIDEKIQ\_ prefix [#3218]
+
+1.4.0
+-------------
+
+- No functional changes, require latest Sidekiq and Sidekiq Pro versions
+
+1.3.2
+-------------
+
+- Upgrade encryption to use OpenSSL's more secure GCM mode. [#3060]
+
+1.3.1
+-------------
+
+- Fix multi-process memory monitoring on CentOS 6.x [#3063]
+- Polish the new encryption feature a bit.
+
+1.3.0
+-------------
+
+- **BETA** [New encryption feature](https://github.com/mperham/sidekiq/wiki/Ent-Encryption)
+  which automatically encrypts the last argument of a Worker, aka the secret bag.
+
+1.2.4
+-------------
+
+- Fix issue causing some minutely jobs to execute every other minute.
+- Log a warning if slow periodic processing causes us to miss a clock tick.
+
+1.2.3
+-------------
+
+- Periodic jobs could stop executing until process restart if Redis goes down [#3047]
+
+1.2.2
+-------------
+
+- Add API to check if a unique lock is present. See [#2932] for details.
+- Tune concurrent limiters to minimize thread thrashing under heavy contention. [#2944]
+- Add option for tuning which Bundler groups get preloaded with `sidekiqswarm` [#3025]
+```
+SIDEKIQ_PRELOAD=default,production bin/sidekiqswarm ...
+# Use an empty value for maximum application compatibility
+SIDEKIQ_PRELOAD= bin/sidekiqswarm ...
+```
+
+1.2.1
+-------------
+
+- Multi-Process mode can now monitor the RSS memory of children and
+  restart any that grow too large.  To limit children to 1GB each:
+```
+MAXMEM_KB=1048576 COUNT=2 bundle exec sidekiqswarm ...
+```
+
 1.2.0
 -------------
 

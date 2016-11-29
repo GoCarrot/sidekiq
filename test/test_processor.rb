@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 require_relative 'helper'
 require 'sidekiq/fetch'
 require 'sidekiq/cli'
@@ -62,6 +63,54 @@ class TestProcessor < Sidekiq::Test
       @mgr.expect(:processor_done, nil, [@processor])
       @processor.process(work(msgstr))
       assert_equal [['myarg']], msg['args']
+    end
+
+    describe 'exception handling' do
+      let(:errors) { [] }
+      let(:error_handler) do
+        proc do |exception, context|
+          errors << { exception: exception, context: context }
+        end
+      end
+
+      before do
+        Sidekiq.error_handlers << error_handler
+      end
+
+      after do
+        Sidekiq.error_handlers.pop
+      end
+
+      it 'handles exceptions raised by the job' do
+        job_hash = { 'class' => MockWorker.to_s, 'args' => ['boom'] }
+        msg = Sidekiq.dump_json(job_hash)
+        job = work(msg)
+        begin
+          @processor.instance_variable_set(:'@job', job)
+          @processor.process(job)
+        rescue TestException
+        end
+        assert_equal 1, errors.count
+        assert_instance_of TestException, errors.first[:exception]
+        assert_equal msg, errors.first[:context][:jobstr]
+        assert_equal job_hash, errors.first[:context][:job]
+      end
+
+      it 'handles exceptions raised by the reloader' do
+        job_hash = { 'class' => MockWorker.to_s, 'args' => ['boom'] }
+        msg = Sidekiq.dump_json(job_hash)
+        @processor.instance_variable_set(:'@reloader', proc { raise TEST_EXCEPTION })
+        job = work(msg)
+        begin
+          @processor.instance_variable_set(:'@job', job)
+          @processor.process(job)
+        rescue TestException
+        end
+        assert_equal 1, errors.count
+        assert_instance_of TestException, errors.first[:exception]
+        assert_equal msg, errors.first[:context][:jobstr]
+        assert_equal job_hash, errors.first[:context][:job]
+      end
     end
 
     describe 'acknowledgement' do
