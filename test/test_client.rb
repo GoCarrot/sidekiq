@@ -1,7 +1,8 @@
 # frozen_string_literal: true
 require_relative 'helper'
+require 'sidekiq/api'
 
-class TestClient < Sidekiq::Test
+describe Sidekiq::Client do
   describe 'errors' do
     it 'raises ArgumentError with invalid params' do
       assert_raises ArgumentError do
@@ -22,6 +23,10 @@ class TestClient < Sidekiq::Test
 
       assert_raises ArgumentError do
         Sidekiq::Client.push('queue' => 'foo', 'class' => MyWorker, 'args' => 1)
+      end
+
+      assert_raises ArgumentError do
+        Sidekiq::Client.push('queue' => 'foo', 'class' => MyWorker, 'args' => [1], 'at' => Time.now)
       end
     end
   end
@@ -100,10 +105,10 @@ class TestClient < Sidekiq::Test
       assert Sidekiq::Client.enqueue(MyWorker, 1, 2)
       assert Sidekiq::Client.enqueue_to(:custom_queue, MyWorker, 1, 2)
       assert_equal 1, Sidekiq::Queue.new('custom_queue').size
-      assert Sidekiq::Client.enqueue_to_in(:custom_queue, 3.minutes, MyWorker, 1, 2)
-      assert Sidekiq::Client.enqueue_to_in(:custom_queue, -3.minutes, MyWorker, 1, 2)
+      assert Sidekiq::Client.enqueue_to_in(:custom_queue, 3, MyWorker, 1, 2)
+      assert Sidekiq::Client.enqueue_to_in(:custom_queue, -3, MyWorker, 1, 2)
       assert_equal 2, Sidekiq::Queue.new('custom_queue').size
-      assert Sidekiq::Client.enqueue_in(3.minutes, MyWorker, 1, 2)
+      assert Sidekiq::Client.enqueue_in(3, MyWorker, 1, 2)
       assert QueuedWorker.perform_async(1, 2)
       assert_equal 1, Sidekiq::Queue.new('flimflam').size
     end
@@ -159,7 +164,7 @@ class TestClient < Sidekiq::Test
         chain.add Stopper
       end
 
-      assert_equal nil, client.push('class' => MyWorker, 'args' => [0])
+      assert_nil client.push('class' => MyWorker, 'args' => [0])
       assert_match(/[0-9a-f]{12}/, client.push('class' => MyWorker, 'args' => [1]))
       client.push_bulk('class' => MyWorker, 'args' => [[0], [1]]).each do |jid|
         assert_match(/[0-9a-f]{12}/, jid)
@@ -199,21 +204,28 @@ class TestClient < Sidekiq::Test
     end
 
     it 'allows #via to point to different Redi' do
-      conn = MiniTest::Mock.new
-      conn.expect(:multi, [0, 1])
       default = Sidekiq::Client.new.redis_pool
-      sharded_pool = ConnectionPool.new(size: 1) { conn }
-      Sidekiq::Client.via(sharded_pool) do
+
+      moo = MiniTest::Mock.new
+      moo.expect(:multi, [0, 1])
+      beef = ConnectionPool.new(size: 1) { moo }
+
+      oink = MiniTest::Mock.new
+      oink.expect(:multi, [0, 1])
+      pork = ConnectionPool.new(size: 1) { oink }
+
+      Sidekiq::Client.via(beef) do
         CWorker.perform_async(1,2,3)
-        assert_equal sharded_pool, Sidekiq::Client.new.redis_pool
-        assert_raises RuntimeError do
-          Sidekiq::Client.via(default) do
-            # nothing
-          end
+        assert_equal beef, Sidekiq::Client.new.redis_pool
+        Sidekiq::Client.via(pork) do
+          assert_equal pork, Sidekiq::Client.new.redis_pool
+          CWorker.perform_async(1,2,3)
         end
+        assert_equal beef, Sidekiq::Client.new.redis_pool
       end
       assert_equal default, Sidekiq::Client.new.redis_pool
-      conn.verify
+      moo.verify
+      oink.verify
     end
 
     it 'allows Resque helpers to point to different Redi' do
@@ -226,41 +238,24 @@ class TestClient < Sidekiq::Test
     end
   end
 
-  describe 'Sidekiq::Worker#set' do
-    class SetWorker
-      include Sidekiq::Worker
-      sidekiq_options :queue => :foo, 'retry' => 12
-    end
+  describe 'class attribute race conditions' do
+    new_class = -> {
+      Class.new do
+        class_eval('include Sidekiq::Worker')
 
-    def setup
-      Sidekiq.redis {|c| c.flushdb }
-    end
+        define_method(:foo) { get_sidekiq_options }
+      end
+    }
 
-    it 'allows option overrides' do
-      q = Sidekiq::Queue.new('bar')
-      assert_equal 0, q.size
-      assert SetWorker.set(queue: :bar).perform_async(1)
-      job = q.first
-      assert_equal 'bar', job['queue']
-      assert_equal 12, job['retry']
-    end
+    it 'does not explode when new initializing classes from multiple threads' do
+      100.times do
+        klass = new_class.call
 
-    it 'handles symbols and strings' do
-      q = Sidekiq::Queue.new('bar')
-      assert_equal 0, q.size
-      assert SetWorker.set('queue' => 'bar', :retry => 11).perform_async(1)
-      job = q.first
-      assert_equal 'bar', job['queue']
-      assert_equal 11, job['retry']
-
-      q.clear
-      assert SetWorker.perform_async(1)
-      assert_equal 0, q.size
-
-      q = Sidekiq::Queue.new('foo')
-      job = q.first
-      assert_equal 'foo', job['queue']
-      assert_equal 12, job['retry']
+        t1 = Thread.new { klass.sidekiq_options({}) }
+        t2 = Thread.new { klass.sidekiq_options({}) }
+        t1.join
+        t2.join
+      end
     end
   end
 end

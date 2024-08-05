@@ -1,4 +1,3 @@
-# encoding: utf-8
 # frozen_string_literal: true
 require 'sidekiq/util'
 require 'sidekiq/processor'
@@ -10,7 +9,7 @@ module Sidekiq
 
   ##
   # The Manager is the central coordination point in Sidekiq, controlling
-  # the lifecycle of the Processors and feeding them jobs as necessary.
+  # the lifecycle of the Processors.
   #
   # Tasks:
   #
@@ -31,7 +30,7 @@ module Sidekiq
     def initialize(options={})
       logger.debug { options.inspect }
       @options = options
-      @count = options[:concurrency] || 25
+      @count = options[:concurrency] || 10
       raise ArgumentError, "Concurrency of #{@count} is not supported" if @count < 1
 
       @done = false
@@ -54,7 +53,7 @@ module Sidekiq
 
       logger.info { "Terminating quiet workers" }
       @workers.each { |x| x.terminate }
-      fire_event(:quiet, true)
+      fire_event(:quiet, reverse: true)
     end
 
     # hack for quicker development / testing environment #2774
@@ -62,7 +61,7 @@ module Sidekiq
 
     def stop(deadline)
       quiet
-      fire_event(:shutdown, true)
+      fire_event(:shutdown, reverse: true)
 
       # some of the shutdown events can be async,
       # we don't have any way to know when they're done but
@@ -71,11 +70,11 @@ module Sidekiq
       return if @workers.empty?
 
       logger.info { "Pausing to allow workers to finish..." }
-      remaining = deadline - Time.now
+      remaining = deadline - ::Process.clock_gettime(::Process::CLOCK_MONOTONIC)
       while remaining > PAUSE_TIME
         return if @workers.empty?
         sleep PAUSE_TIME
-        remaining = deadline - Time.now
+        remaining = deadline - ::Process.clock_gettime(::Process::CLOCK_MONOTONIC)
       end
       return if @workers.empty?
 

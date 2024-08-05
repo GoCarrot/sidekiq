@@ -8,11 +8,22 @@ module Sidekiq
     class << self
 
       def create(options={})
-        options = options.symbolize_keys
+        options.keys.each do |key|
+          options[key.to_sym] = options.delete(key)
+        end
 
+        options[:id] = "Sidekiq-#{Sidekiq.server? ? "server" : "client"}-PID-#{$$}" if !options.has_key?(:id)
         options[:url] ||= determine_redis_provider
 
-        size = options[:size] || (Sidekiq.server? ? (Sidekiq.options[:concurrency] + 5) : 5)
+        size = if options[:size]
+                 options[:size]
+               elsif Sidekiq.server?
+                 Sidekiq.options[:concurrency] + 5
+               elsif ENV['RAILS_MAX_THREADS']
+                 Integer(ENV['RAILS_MAX_THREADS'])
+               else
+                 5
+               end
 
         verify_sizing(size, Sidekiq.options[:concurrency]) if Sidekiq.server?
 
@@ -35,7 +46,7 @@ module Sidekiq
       #   - enterprise's leader election
       #   - enterprise's cron support
       def verify_sizing(size, concurrency)
-        raise ArgumentError, "Your Redis connection pool is too small for Sidekiq to work. Your pool has #{size} connections but really needs to have at least #{concurrency + 2}" if size <= concurrency
+        raise ArgumentError, "Your Redis connection pool is too small for Sidekiq to work. Your pool has #{size} connections but must have at least #{concurrency + 2}" if size <= concurrency
       end
 
       def build_client(options)
@@ -67,7 +78,14 @@ module Sidekiq
           opts.delete(:network_timeout)
         end
 
-        opts[:driver] = opts[:driver] || 'ruby'
+        opts[:driver] ||= Redis::Connection.drivers.last || 'ruby'
+
+        # Issue #3303, redis-rb will silently retry an operation.
+        # This can lead to duplicate jobs if Sidekiq::Client's LPUSH
+        # is performed twice but I believe this is much, much rarer
+        # than the reconnect silently fixing a problem; we keep it
+        # on by default.
+        opts[:reconnect_attempts] ||= 1
 
         opts
       end
@@ -91,7 +109,34 @@ module Sidekiq
       end
 
       def determine_redis_provider
-        ENV[ENV['REDIS_PROVIDER'] || 'REDIS_URL']
+        # If you have this in your environment:
+        # MY_REDIS_URL=redis://hostname.example.com:1238/4
+        # then set:
+        # REDIS_PROVIDER=MY_REDIS_URL
+        # and Sidekiq will find your custom URL variable with no custom
+        # initialization code at all.
+        p = ENV['REDIS_PROVIDER']
+        if p && p =~ /\:/
+          Sidekiq.logger.error <<-EOM
+
+#################################################################################
+
+REDIS_PROVIDER should be set to the **name** of the variable which contains the Redis URL, not a URL itself.
+Platforms like Heroku sell addons that publish a *_URL variable.  You tell Sidekiq with REDIS_PROVIDER, e.g.:
+
+  REDIS_PROVIDER=REDISTOGO_URL
+  REDISTOGO_URL=redis://somehost.example.com:6379/4
+
+Use REDIS_URL if you wish to point Sidekiq to a URL directly.
+
+This configuration error will crash starting in Sidekiq 5.3.
+
+#################################################################################
+EOM
+        end
+        ENV[
+          ENV['REDIS_PROVIDER'] || 'REDIS_URL'
+        ]
       end
 
     end

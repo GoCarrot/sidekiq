@@ -1,8 +1,8 @@
-# encoding: utf-8
 # frozen_string_literal: true
 require_relative 'helper'
+require 'sidekiq/cli'
 
-class TestSidekiq < Sidekiq::Test
+describe Sidekiq do
   describe 'json processing' do
     it 'handles json' do
       assert_equal({"foo" => "bar"}, Sidekiq.load_json("{\"foo\":\"bar\"}"))
@@ -82,7 +82,7 @@ class TestSidekiq < Sidekiq::Test
     it 'does not continually retry' do
       assert_raises Redis::CommandError do
         Sidekiq.redis do |c|
-          raise Redis::CommandError, "READONLY You can't write against a read only slave."
+          raise Redis::CommandError, "READONLY You can't write against a replica."
         end
       end
     end
@@ -91,7 +91,7 @@ class TestSidekiq < Sidekiq::Test
       counts = []
       Sidekiq.redis do |c|
         counts << c.info['total_connections_received'].to_i
-        raise Redis::CommandError, "READONLY You can't write against a read only slave." if counts.size == 1
+        raise Redis::CommandError, "READONLY You can't write against a replica." if counts.size == 1
       end
       assert_equal 2, counts.size
       assert_equal counts[0] + 1, counts[1]

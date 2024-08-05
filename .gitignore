@@ -2,6 +2,7 @@
 .ruby-version
 tags
 Gemfile.lock
+gemfiles/*.lock
 *.swp
 dump.rdb
 .rbx
@@ -10,3 +11,5 @@ vendor/
 .bundle/
 .sass-cache/
 tmp/
+pkg/*.gem
+.byebug_history

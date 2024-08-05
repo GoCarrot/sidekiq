@@ -48,8 +48,14 @@ module Sidekiq
     #   queue - the named queue to use, default 'default'
     #   class - the worker class to call, required
     #   args - an array of simple arguments to the perform method, must be JSON-serializable
+    #   at - timestamp to schedule the job (optional), must be Numeric (e.g. Time.now.to_f)
     #   retry - whether to retry this job if it fails, default true or an integer number of retries
     #   backtrace - whether to save any error backtrace, default false
+    #
+    # If class is set to the class name, the jobs' options will be based on Sidekiq's default
+    # worker options. Otherwise, they will be based on the job class's options.
+    #
+    # Any options valid for a worker class's sidekiq_options are also available here.
     #
     # All options must be strings, not symbols.  NB: because we are serializing to JSON, all
     # symbols in 'args' will be converted to strings.  Note that +backtrace: true+ can take quite a bit of
@@ -71,9 +77,10 @@ module Sidekiq
     end
 
     ##
-    # Push a large number of jobs to Redis.  In practice this method is only
-    # useful if you are pushing thousands of jobs or more.  This method
-    # cuts out the redis network round trip latency.
+    # Push a large number of jobs to Redis. This method cuts out the redis
+    # network round trip latency.  I wouldn't recommend pushing more than
+    # 1000 per call but YMMV based on network quality, size of job args, etc.
+    # A large number of jobs can cause a bit of Redis command processing latency.
     #
     # Takes the same arguments as #push except that args is expected to be
     # an Array of Arrays.  All other keys are duplicated for each job.  Each job
@@ -114,11 +121,10 @@ module Sidekiq
     def self.via(pool)
       raise ArgumentError, "No pool given" if pool.nil?
       current_sidekiq_pool = Thread.current[:sidekiq_via_pool]
-      raise RuntimeError, "Sidekiq::Client.via is not re-entrant" if current_sidekiq_pool && current_sidekiq_pool != pool
       Thread.current[:sidekiq_via_pool] = pool
       yield
     ensure
-      Thread.current[:sidekiq_via_pool] = nil
+      Thread.current[:sidekiq_via_pool] = current_sidekiq_pool
     end
 
     def backend
@@ -179,7 +185,7 @@ module Sidekiq
         ts = (int < 1_000_000_000 ? now + int : int)
 
         item = { 'class' => klass, 'args' => args, 'at' => ts, 'queue' => queue }
-        item.delete('at'.freeze) if ts <= now
+        item.delete('at') if ts <= now
 
         klass.client_push(item)
       end
@@ -208,24 +214,25 @@ module Sidekiq
     end
 
     def normalize_item(item)
-      raise(ArgumentError, "Job must be a Hash with 'class' and 'args' keys: { 'class' => SomeWorker, 'args' => ['bob', 1, :foo => 'bar'] }") unless item.is_a?(Hash) && item.has_key?('class'.freeze) && item.has_key?('args'.freeze)
+      raise(ArgumentError, "Job must be a Hash with 'class' and 'args' keys: { 'class' => SomeWorker, 'args' => ['bob', 1, :foo => 'bar'] }") unless item.is_a?(Hash) && item.has_key?('class') && item.has_key?('args')
       raise(ArgumentError, "Job args must be an Array") unless item['args'].is_a?(Array)
-      raise(ArgumentError, "Job class must be either a Class or String representation of the class name") unless item['class'.freeze].is_a?(Class) || item['class'.freeze].is_a?(String)
+      raise(ArgumentError, "Job class must be either a Class or String representation of the class name") unless item['class'].is_a?(Class) || item['class'].is_a?(String)
+      raise(ArgumentError, "Job 'at' must be a Numeric timestamp") if item.has_key?('at') && !item['at'].is_a?(Numeric)
       #raise(ArgumentError, "Arguments must be native JSON types, see https://github.com/mperham/sidekiq/wiki/Best-Practices") unless JSON.load(JSON.dump(item['args'])) == item['args']
 
-      normalized_hash(item['class'.freeze])
+      normalized_hash(item['class'])
         .each{ |key, value| item[key] = value if item[key].nil? }
 
-      item['class'.freeze] = item['class'.freeze].to_s
-      item['queue'.freeze] = item['queue'.freeze].to_s
-      item['jid'.freeze] ||= SecureRandom.hex(12)
-      item['created_at'.freeze] ||= Time.now.to_f
+      item['class'] = item['class'].to_s
+      item['queue'] = item['queue'].to_s
+      item['jid'] ||= SecureRandom.hex(12)
+      item['created_at'] ||= Time.now.to_f
       item
     end
 
     def normalized_hash(item_class)
       if item_class.is_a?(Class)
-        raise(ArgumentError, "Message must include a Sidekiq::Worker class, not class name: #{item_class.ancestors.inspect}") if !item_class.respond_to?('get_sidekiq_options'.freeze)
+        raise(ArgumentError, "Message must include a Sidekiq::Worker class, not class name: #{item_class.ancestors.inspect}") if !item_class.respond_to?('get_sidekiq_options')
         item_class.get_sidekiq_options
       else
         Sidekiq.default_worker_options

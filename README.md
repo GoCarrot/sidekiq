@@ -3,7 +3,7 @@ Sidekiq
 
 [![Gem Version](https://badge.fury.io/rb/sidekiq.svg)](https://rubygems.org/gems/sidekiq)
 [![Code Climate](https://codeclimate.com/github/mperham/sidekiq.svg)](https://codeclimate.com/github/mperham/sidekiq)
-[![Build Status](https://travis-ci.org/mperham/sidekiq.svg)](https://travis-ci.org/mperham/sidekiq)
+[![Build Status](https://circleci.com/gh/mperham/sidekiq/tree/master.svg?style=svg)](https://circleci.com/gh/mperham/sidekiq/tree/master)
 [![Gitter Chat](https://badges.gitter.im/mperham/sidekiq.svg)](https://gitter.im/mperham/sidekiq)
 
 
@@ -28,13 +28,14 @@ Sidekiq 3.5.1    | 22ms	| 1257 MB | 125 sec | 800 jobs/sec
 Resque 1.25.2    |  -	  | -       | 420 sec | 240 jobs/sec
 DelayedJob 4.1.1 |  -   | -       | 465 sec | 215 jobs/sec
 
+<small>This benchmark can be found in `bin/sidekiqload`.</small>
 
 Requirements
 -----------------
 
-Sidekiq supports CRuby 2.0+ and JRuby 9k.
+Sidekiq supports CRuby 2.2.2+ and JRuby 9k.
 
-All Rails releases >= 3.2 are officially supported.
+All Rails releases >= 4.0 are officially supported.
 
 Redis 2.8 or greater is required.  3.0.3+ is recommended for large
 installations with thousands of worker threads.
@@ -76,17 +77,18 @@ Problems?
 If you have a problem, please review the [FAQ](https://github.com/mperham/sidekiq/wiki/FAQ) and [Troubleshooting](https://github.com/mperham/sidekiq/wiki/Problems-and-Troubleshooting) wiki pages.
 Searching the [issues](https://github.com/mperham/sidekiq/issues) for your problem is also a good idea.
 
+Sidekiq Pro and Sidekiq Enterprise customers get private email support.  You can purchase at http://sidekiq.org; email support@contribsys.com for help.
+
 Useful resources:
 
 * Product documentation is in the [wiki](https://github.com/mperham/sidekiq/wiki).
 * Release announcements are made to the [@sidekiq](https://twitter.com/sidekiq) Twitter account.
-* Here's a [Reddit forum](https://reddit.com/r/sidekiq) dedicated to Sidekiq discussion
 * The [Sidekiq tag](https://stackoverflow.com/questions/tagged/sidekiq) on Stack Overflow has lots of useful Q &amp; A.
 
-**No support via Twitter, 140 characters is not enough.**
+**No support via Twitter**
 
 Every Friday morning is Sidekiq happy hour: I video chat and answer questions.
-See the [Sidekiq support page](http://sidekiq.org/support) for details.
+See the [Sidekiq support page](http://sidekiq.org/support.html) for details.
 
 Thanks
 -----------------

@@ -1,4 +1,3 @@
-# encoding: utf-8
 # frozen_string_literal: true
 $stdout.sync = true
 
@@ -10,6 +9,7 @@ require 'fileutils'
 
 require 'sidekiq'
 require 'sidekiq/util'
+require 'sidekiq/launcher'
 
 module Sidekiq
   class CLI
@@ -17,45 +17,47 @@ module Sidekiq
     include Singleton unless $TESTING
 
     PROCTITLES = [
-      proc { 'sidekiq'.freeze },
+      proc { 'sidekiq' },
       proc { Sidekiq::VERSION },
       proc { |me, data| data['tag'] },
       proc { |me, data| "[#{Processor::WORKER_STATE.size} of #{data['concurrency']} busy]" },
       proc { |me, data| "stopping" if me.stopping? },
     ]
 
-    # Used for CLI testing
-    attr_accessor :code
     attr_accessor :launcher
     attr_accessor :environment
 
-    def initialize
-      @code = nil
-    end
-
-    def parse(args=ARGV)
-      @code = nil
-
+    def parse(args = ARGV)
       setup_options(args)
       initialize_logger
       validate!
-      daemonize
-      write_pid
+    end
+
+    def jruby?
+      defined?(::JRUBY_VERSION)
     end
 
     # Code within this method is not tested because it alters
     # global process state irreversibly.  PRs which improve the
     # test coverage of Sidekiq::CLI are welcomed.
     def run
+      daemonize if options[:daemon]
+      write_pid
       boot_system
-      print_banner
+      print_banner if environment == 'development' && $stdout.tty?
 
       self_read, self_write = IO.pipe
+      sigs = %w(INT TERM TTIN TSTP)
+      # USR1 and USR2 don't work on the JVM
+      if !jruby?
+        sigs << 'USR1'
+        sigs << 'USR2'
+      end
 
-      %w(INT TERM USR1 USR2 TTIN).each do |sig|
+      sigs.each do |sig|
         begin
           trap sig do
-            self_write.puts(sig)
+            self_write.write("#{sig}\n")
           end
         rescue ArgumentError
           puts "Signal #{sig} not supported"
@@ -70,22 +72,35 @@ module Sidekiq
       # fire startup and start multithreading.
       ver = Sidekiq.redis_info['redis_version']
       raise "You are using Redis v#{ver}, Sidekiq requires Redis v2.8.0 or greater" if ver < '2.8'
+      logger.warn "Sidekiq 6.0 will require Redis 4.0+, you are using Redis v#{ver}" if ver < '4'
+
+      # Since the user can pass us a connection pool explicitly in the initializer, we
+      # need to verify the size is large enough or else Sidekiq's performance is dramatically slowed.
+      cursize = Sidekiq.redis_pool.size
+      needed = Sidekiq.options[:concurrency] + 2
+      raise "Your pool of #{cursize} Redis connections is too small, please increase the size to at least #{needed}" if cursize < needed
+
+      # cache process identity
+      Sidekiq.options[:identity] = identity
 
       # Touch middleware so it isn't lazy loaded by multiple threads, #3043
       Sidekiq.server_middleware
 
       # Before this point, the process is initializing with just the main thread.
       # Starting here the process will now have multiple threads running.
-      fire_event(:startup)
+      fire_event(:startup, reverse: false, reraise: true)
 
       logger.debug { "Client Middleware: #{Sidekiq.client_middleware.map(&:klass).join(', ')}" }
       logger.debug { "Server Middleware: #{Sidekiq.server_middleware.map(&:klass).join(', ')}" }
 
+      launch(self_read)
+    end
+
+    def launch(self_read)
       if !options[:daemon]
         logger.info 'Starting processing, hit Ctrl-C to stop'
       end
 
-      require 'sidekiq/launcher'
       @launcher = Sidekiq::Launcher.new(options)
 
       begin
@@ -122,56 +137,60 @@ module Sidekiq
 }
     end
 
-    def handle_signal(sig)
-      Sidekiq.logger.debug "Got #{sig} signal"
-      case sig
-      when 'INT'
-        # Handle Ctrl-C in JRuby like MRI
-        # http://jira.codehaus.org/browse/JRUBY-4637
-        raise Interrupt
-      when 'TERM'
-        # Heroku sends TERM and then waits 10 seconds for process to exit.
-        raise Interrupt
-      when 'USR1'
+    SIGNAL_HANDLERS = {
+      # Ctrl-C in terminal
+      'INT' => ->(cli) { raise Interrupt },
+      # TERM is the signal that Sidekiq must exit.
+      # Heroku sends TERM and then waits 30 seconds for process to exit.
+      'TERM' => ->(cli) { raise Interrupt },
+      'USR1' => ->(cli) {
         Sidekiq.logger.info "Received USR1, no longer accepting new work"
-        launcher.quiet
-      when 'USR2'
+        cli.launcher.quiet
+      },
+      'TSTP' => ->(cli) {
+        Sidekiq.logger.info "Received TSTP, no longer accepting new work"
+        cli.launcher.quiet
+      },
+      'USR2' => ->(cli) {
         if Sidekiq.options[:logfile]
           Sidekiq.logger.info "Received USR2, reopening log file"
           Sidekiq::Logging.reopen_logs
         end
-      when 'TTIN'
+      },
+      'TTIN' => ->(cli) {
         Thread.list.each do |thread|
-          Sidekiq.logger.warn "Thread TID-#{thread.object_id.to_s(36)} #{thread['label']}"
+          Sidekiq.logger.warn "Thread TID-#{(thread.object_id ^ ::Process.pid).to_s(36)} #{thread['sidekiq_label']}"
           if thread.backtrace
             Sidekiq.logger.warn thread.backtrace.join("\n")
           else
             Sidekiq.logger.warn "<no backtrace available>"
           end
         end
+      },
+    }
+
+    def handle_signal(sig)
+      Sidekiq.logger.debug "Got #{sig} signal"
+      handy = SIGNAL_HANDLERS[sig]
+      if handy
+        handy.call(self)
+      else
+        Sidekiq.logger.info { "No signal handler for #{sig}" }
       end
     end
 
     private
 
     def print_banner
-      # Print logo and banner for development
-      if environment == 'development' && $stdout.tty?
-        puts "\e[#{31}m"
-        puts Sidekiq::CLI.banner
-        puts "\e[0m"
-      end
+      puts "\e[#{31}m"
+      puts Sidekiq::CLI.banner
+      puts "\e[0m"
     end
 
     def daemonize
-      return unless options[:daemon]
-
       raise ArgumentError, "You really should set a logfile if you're going to daemonize" unless options[:logfile]
-      files_to_reopen = []
-      ObjectSpace.each_object(File) do |file|
-        files_to_reopen << file unless file.closed?
-      end
 
+      files_to_reopen = ObjectSpace.each_object(File).reject { |f| f.closed? }
       ::Process.daemon(true, true)
 
       files_to_reopen.each do |file|
@@ -197,20 +216,50 @@ module Sidekiq
       @environment = cli_env || ENV['RAILS_ENV'] || ENV['RACK_ENV'] || 'development'
     end
 
+    def symbolize_keys_deep!(hash)
+      hash.keys.each do |k|
+        symkey = k.respond_to?(:to_sym) ? k.to_sym : k
+        hash[symkey] = hash.delete k
+        symbolize_keys_deep! hash[symkey] if hash[symkey].kind_of? Hash
+      end
+    end
+
     alias_method :die, :exit
     alias_method :☠, :exit
 
     def setup_options(args)
+      # parse CLI options
       opts = parse_options(args)
+
       set_environment opts[:environment]
 
-      cfile = opts[:config_file]
-      opts = parse_config(cfile).merge(opts) if cfile
+      # check config file presence
+      if opts[:config_file]
+        if opts[:config_file] && !File.exist?(opts[:config_file])
+          raise ArgumentError, "No such file #{opts[:config_file]}"
+        end
+      else
+        config_dir = if File.directory?(opts[:require].to_s)
+          File.join(opts[:require], 'config')
+        else
+          File.join(options[:require], 'config')
+        end
 
+        %w[sidekiq.yml sidekiq.yml.erb].each do |config_file|
+          path = File.join(config_dir, config_file)
+          opts[:config_file] ||= path if File.exist?(path)
+        end
+      end
+
+      # parse config file options
+      opts = parse_config(opts[:config_file]).merge(opts) if opts[:config_file]
+
+      # set defaults
+      opts[:queues] = Array(opts[:queues]) << 'default' if opts[:queues].nil? || opts[:queues].empty?
       opts[:strict] = true if opts[:strict].nil?
-      opts[:concurrency] = Integer(ENV["RAILS_MAX_THREADS"]) if !opts[:concurrency] && ENV["RAILS_MAX_THREADS"]
-      opts[:identity] = identity
+      opts[:concurrency] = Integer(ENV["RAILS_MAX_THREADS"]) if opts[:concurrency].nil? && ENV["RAILS_MAX_THREADS"]
 
+      # merge with defaults
       options.merge!(opts)
     end
 
@@ -221,14 +270,10 @@ module Sidekiq
     def boot_system
       ENV['RACK_ENV'] = ENV['RAILS_ENV'] = environment
 
-      raise ArgumentError, "#{options[:require]} does not exist" unless File.exist?(options[:require])
-
       if File.directory?(options[:require])
         require 'rails'
         if ::Rails::VERSION::MAJOR < 4
-          require 'sidekiq/rails'
-          require File.expand_path("#{options[:require]}/config/environment.rb")
-          ::Rails.application.eager_load!
+          raise "Sidekiq no longer supports this version of Rails"
         elsif ::Rails::VERSION::MAJOR == 4
           # Painful contortions, see 1791 for discussion
           # No autoloading, we want to force eager load for everything.
@@ -239,16 +284,12 @@ module Sidekiq
           require 'sidekiq/rails'
           require File.expand_path("#{options[:require]}/config/environment.rb")
         else
-          # Rails 5+ && development mode, use Reloader
           require 'sidekiq/rails'
           require File.expand_path("#{options[:require]}/config/environment.rb")
         end
         options[:tag] ||= default_tag
       else
-        not_required_message = "#{options[:require]} was not required, you should use an explicit path: " +
-            "./#{options[:require]} or /path/to/#{options[:require]}"
-
-        require(options[:require]) || raise(ArgumentError, not_required_message)
+        require options[:require]
       end
     end
 
@@ -264,12 +305,10 @@ module Sidekiq
     end
 
     def validate!
-      options[:queues] << 'default' if options[:queues].empty?
-
       if !File.exist?(options[:require]) ||
          (File.directory?(options[:require]) && !File.exist?("#{options[:require]}/config/application.rb"))
         logger.info "=================================================================="
-        logger.info "  Please point sidekiq to a Rails 3/4 application or a Ruby file  "
+        logger.info "  Please point sidekiq to a Rails 4/5 application or a Ruby file  "
         logger.info "  to load your worker classes with -r [DIR|FILE]."
         logger.info "=================================================================="
         logger.info @parser
@@ -291,6 +330,7 @@ module Sidekiq
 
         o.on '-d', '--daemon', "Daemonize process" do |arg|
           opts[:daemon] = arg
+          puts "WARNING: Daemonization mode will be removed in Sidekiq 6.0, see #4045. Please use a proper process supervisor to start and manage your services"
         end
 
         o.on '-e', '--environment ENV', "Application environment" do |arg|
@@ -301,6 +341,8 @@ module Sidekiq
           opts[:tag] = arg
         end
 
+        # this index remains here for backwards compatibility but none of the Sidekiq
+        # family use this value anymore.  it was used by Pro's original reliable_fetch.
         o.on '-i', '--index INT', "unique process index on this machine" do |arg|
           opts[:index] = Integer(arg.match(/\d+/)[0])
         end
@@ -328,10 +370,12 @@ module Sidekiq
 
         o.on '-L', '--logfile PATH', "path to writable logfile" do |arg|
           opts[:logfile] = arg
+          puts "WARNING: Logfile redirection will be removed in Sidekiq 6.0, see #4045. Sidekiq will only log to STDOUT"
         end
 
         o.on '-P', '--pidfile PATH', "path to pidfile" do |arg|
           opts[:pidfile] = arg
+          puts "WARNING: PID file creation will be removed in Sidekiq 6.0, see #4045. Please use a proper process supervisor to start and manage your services"
         end
 
         o.on '-V', '--version', "Print version and exit" do |arg|
@@ -345,11 +389,8 @@ module Sidekiq
         logger.info @parser
         die 1
       end
-      @parser.parse!(argv)
 
-      %w[config/sidekiq.yml config/sidekiq.yml.erb].each do |filename|
-        opts[:config_file] ||= filename if File.exist?(filename)
-      end
+      @parser.parse!(argv)
 
       opts
     end
@@ -369,16 +410,18 @@ module Sidekiq
       end
     end
 
-    def parse_config(cfile)
-      opts = {}
-      if File.exist?(cfile)
-        opts = YAML.load(ERB.new(IO.read(cfile)).result) || opts
-        opts = opts.merge(opts.delete(environment) || {})
-        parse_queues(opts, opts.delete(:queues) || [])
+    def parse_config(path)
+      opts = YAML.load(ERB.new(File.read(path)).result) || {}
+
+      if opts.respond_to? :deep_symbolize_keys!
+        opts.deep_symbolize_keys!
       else
-        # allow a non-existent config file so Sidekiq
-        # can be deployed by cap with just the defaults.
+        symbolize_keys_deep!(opts)
       end
+
+      opts = opts.merge(opts.delete(environment.to_sym) || {})
+      parse_queues(opts, opts.delete(:queues) || [])
+
       ns = opts.delete(:namespace)
       if ns
         # logger hasn't been initialized yet, puts is all we have.
@@ -392,10 +435,10 @@ module Sidekiq
       queues_and_weights.each { |queue_and_weight| parse_queue(opts, *queue_and_weight) }
     end
 
-    def parse_queue(opts, q, weight=nil)
-      [weight.to_i, 1].max.times do
-       (opts[:queues] ||= []) << q
-      end
+    def parse_queue(opts, queue, weight = nil)
+      opts[:queues] ||= []
+      raise ArgumentError, "queues: #{queue} cannot be defined twice" if opts[:queues].include?(queue)
+      [weight.to_i, 1].max.times { opts[:queues] << queue }
       opts[:strict] = false if weight.to_i > 0
     end
   end

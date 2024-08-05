@@ -1,12 +1,181 @@
-Sidekiq Pro Changelog
-=======================
+# Sidekiq Pro Changelog
+
+[Sidekiq Changes](https://github.com/mperham/sidekiq/blob/master/Changes.md) | [Sidekiq Pro Changes](https://github.com/mperham/sidekiq/blob/master/Pro-Changes.md) | [Sidekiq Enterprise Changes](https://github.com/mperham/sidekiq/blob/master/Ent-Changes.md)
 
 Please see [http://sidekiq.org/](http://sidekiq.org/) for more details and how to buy.
 
 HEAD
 ---------
 
-- Don't display "Delete/Retry All" buttons when filtering in Web UI, #3243
+- Add ES translations, see issues [#3949](https://github.com/mperham/sidekiq/issues/3949) and [#3951](https://github.com/mperham/sidekiq/issues/3951) to add your own language.
+
+4.0.5
+---------
+
+- Increase super\_fetch retriever thread count from 1 to 2 to make it
+  less sensitive to Redis latency.
+- Better handling of invalid job JSON by reliable scheduler [#4053]
+- Added ZH, PT, JA and RU translations.
+
+4.0.4
+---------
+
+- Update Sidekiq::Client patches to work with new Module#prepend
+  mechanism in Sidekiq 5.2.0. [#3930]
+
+4.0.3
+---------
+
+- Add at\_exit handler to push any saved jobs in `reliable_push` when exiting. [#3823]
+- Implement batch death callback.  This is fired the first time a job within a batch dies. [#3841]
+```ruby
+batch = Sidekiq::Batch.new
+batch.on(:death, ...)
+```
+
+4.0.2
+---------
+
+- Remove super\_fetch edge case leading to an unnecessary `sleep(1)`
+  call and resulting latency [#3790]
+- Fix possible bad statsd metric call on super\_fetch startup
+- Remove superfluous `freeze` calls on Strings [#3759]
+
+4.0.1
+---------
+
+- Fix incompatibility with the statsd-ruby gem [#3740]
+- Add tags to Statsd metrics when using Datadog [#3744]
+
+4.0.0
+---------
+
+- See the [Sidekiq Pro 4.0](Pro-4.0-Upgrade.md) release notes.
+
+
+3.7.1
+---------
+
+- Deprecate timed\_fetch.  Switch to super\_fetch:
+```ruby
+config.super_fetch!
+```
+
+
+3.7.0
+---------
+
+- Refactor batch job success/failure to gracefully handle several edge
+  cases with regard to Sidekiq::Shutdown.  This should greatly reduce
+  the chances of seeing the long-standing "negative pending count" problem. [#3710]
+
+
+3.6.1
+---------
+
+- Add support for Datadog::Statsd, it is the recommended Statsd client.  [#3699]
+```ruby
+Sidekiq::Pro.dogstatsd = ->{ Datadog::Statsd.new("metrics.example.com", 8125) }
+```
+- Size the statsd connection pool based on Sidekiq's concurrency [#3700]
+
+
+3.6.0
+---------
+
+This release overhauls the Statsd metrics support and adds more
+metrics for tracking Pro feature usage.  In your initializer:
+```ruby
+Sidekiq::Pro.statsd = ->{ ::Statsd.new("127.0.0.1", 8125) }
+```
+Sidekiq Pro will emit more metrics to Statsd:
+```
+jobs.expired - when a job is expired
+jobs.recovered.push - when a job is recovered by reliable_push after network outage
+jobs.recovered.fetch - when a job is recovered by super_fetch after process crash
+batch.created - when a batch is created
+batch.complete - when a batch is completed
+batch.success - when a batch is successful
+```
+Sidekiq Pro's existing Statsd middleware has been rewritten to leverage the new API.
+Everything should be backwards compatible with one deprecation notice.
+
+
+3.5.4
+---------
+
+- Fix case in SuperFetch where Redis downtime can lead to processor thread death [#3684]
+- Fix case where TimedFetch might not recover some pending jobs
+- Fix edge case in Batch::Status#poll leading to premature completion [#3640]
+- Adjust scan API to check 100 elements at a time, to minimize network round trips
+  when scanning large sets.
+
+3.5.3
+---------
+
+- Restore error check for super\_fetch's job ack [#3601]
+- Trim error messages saved in Batch's failure hash, preventing huge
+  messages from bloating Redis. [#3570]
+
+3.5.2
+---------
+
+- Fix `Status#completed?` when run against a Batch that had succeeded
+  and was deleted. [#3519]
+
+3.5.1
+---------
+
+- Work with Sidekiq 5.0.2+
+- Improve performance of super\_fetch with weighted queues [#3489]
+
+3.5.0
+---------
+
+- Add queue pause/unpause endpoints for scripting via curl [#3445]
+- Change how super\_fetch names private queues to avoid hostname/queue clashes. [#3443]
+- Re-implement `Sidekiq::Queue#delete_job` to avoid O(n) runtime [#3408]
+- Batch page displays Pending JIDs if less than 10 [#3130]
+- Batch page has a Search button to find associated Retries [#3130]
+- Make Batch UI progress bar more friendly to the colorblind [#3387]
+
+3.4.5
+---------
+
+- Fix potential job loss with reliable scheduler when lots of jobs are scheduled
+  at precisely the same time. Thanks to raivil for his hard work in
+  reproducing the bug. [#3371]
+
+3.4.4
+---------
+
+- Optimize super\_fetch shutdown to restart jobs quicker [#3249]
+
+3.4.3
+---------
+
+- Limit reliable scheduler to enqueue up to 100 jobs per call, minimizing Redis latency [#3332]
+- Fix bug in super\_fetch logic for queues with `_` in the name [#3339]
+
+3.4.2
+---------
+
+- Add `Batch::Status#invalidated?` API which returns true if any/all
+  JIDs were invalidated within the batch. [#3326]
+
+3.4.1
+---------
+
+- Allow super\_fetch's orphan job check to happen as often as every hour [#3273]
+- Officially deprecate reliable\_fetch algorithm, I now recommend you use `super_fetch` instead:
+```ruby
+Sidekiq.configure_server do |config|
+  config.super_fetch!
+end
+```
+Also note that Sidekiq's `-i/--index` option is no longer used/relevant with super\_fetch.
+- Don't display "Delete/Retry All" buttons when filtering in Web UI [#3243]
+- Reimplement Sidekiq::JobSet#find\_job with ZSCAN [#3197]
 
 3.4.0
 ---------

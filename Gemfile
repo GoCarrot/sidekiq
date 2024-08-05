@@ -1,29 +1,23 @@
 source 'https://rubygems.org'
+
 gemspec
 
-gem 'rails', '5.0.0'
-gem "hiredis"
-gem 'simplecov'
-gem 'minitest'
-gem 'minitest-utils'
-gem 'toxiproxy'
+gem 'rake'
+gem 'redis-namespace'
+gem 'rails', '~> 5.2'
+gem 'sqlite3', '~> 1.3.6', platforms: :ruby
+gem 'activerecord-jdbcsqlite3-adapter', platforms: :jruby
 
-platforms :rbx do
-  gem 'rubysl', '~> 2.0'         # if using anything in the ruby standard library
-  gem 'psych'                    # if using yaml
-  gem 'rubinius-developer_tools' # if using any of coverage, debugger, profiler
+group :test do
+  gem 'minitest'
+  gem 'simplecov'
 end
 
-platforms :ruby do
-  gem 'sqlite3'
+group :development, :test do
+  gem 'pry-byebug', platforms: :mri
 end
 
-platforms :mri do
-  gem 'pry-byebug'
-  gem 'ruby-prof'
+group :load_test do
+  gem 'hiredis'
+  gem 'toxiproxy'
 end
-
-#platforms :jruby do
-  #gem 'jruby-openssl'
-  #gem 'activerecord-jdbcsqlite3-adapter'
-#end

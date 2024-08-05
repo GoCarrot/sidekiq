@@ -39,6 +39,7 @@ en: # <---- change this to your locale code
   AreYouSure: Are you sure?
   DeleteAll: Delete All
   RetryAll: Retry All
+  KillAll: Kill All
   NoRetriesFound: No retries were found
   Error: Error
   ErrorClass: Error Class
@@ -77,3 +78,4 @@ en: # <---- change this to your locale code
   NotYetEnqueued: Not yet enqueued
   CreatedAt: Created At
   BackToApp: Back to App
+  Latency: Latency

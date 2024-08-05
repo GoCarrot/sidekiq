@@ -55,6 +55,15 @@ module Sidekiq
         yield @server_chain if block_given?
         @server_chain
       end
+
+      def constantize(str)
+        names = str.split('::')
+        names.shift if names.empty? || names.first.empty?
+
+        names.inject(Object) do |constant, name|
+          constant.const_defined?(name) ? constant.const_get(name) : constant.const_missing(name)
+        end
+      end
     end
   end
 
@@ -63,9 +72,7 @@ module Sidekiq
 
   class EmptyQueueError < RuntimeError; end
 
-  class Client
-    alias_method :raw_push_real, :raw_push
-
+  module TestingClient
     def raw_push(payloads)
       if Sidekiq::Testing.fake?
         payloads.each do |job|
@@ -76,17 +83,19 @@ module Sidekiq
         true
       elsif Sidekiq::Testing.inline?
         payloads.each do |job|
-          klass = job['class'].constantize
+          klass = Sidekiq::Testing.constantize(job['class'])
           job['id'] ||= SecureRandom.hex(12)
           job_hash = Sidekiq.load_json(Sidekiq.dump_json(job))
           klass.process_job(job_hash)
         end
         true
       else
-        raw_push_real(payloads)
+        super
       end
     end
   end
+
+  Sidekiq::Client.prepend TestingClient
 
   module Queues
     ##
@@ -309,10 +318,16 @@ module Sidekiq
           worker_classes = jobs.map { |job| job["class"] }.uniq
 
           worker_classes.each do |worker_class|
-            worker_class.constantize.drain
+            Sidekiq::Testing.constantize(worker_class).drain
           end
         end
       end
     end
   end
+end
+
+if defined?(::Rails) && Rails.respond_to?(:env) && !Rails.env.test?
+  puts("**************************************************")
+  puts("⛔️ WARNING: Sidekiq testing API enabled, but this is not the test environment.  Your jobs will not go to Redis.")
+  puts("**************************************************")
 end

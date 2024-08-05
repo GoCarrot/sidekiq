@@ -1,4 +1,7 @@
-Myapp::Application.routes.draw do
+require 'sidekiq/web'
+Sidekiq::Web.app_url = '/'
+
+Rails.application.routes.draw do
   mount Sidekiq::Web => '/sidekiq'
   get "work" => "work#index"
   get "work/email" => "work#email"

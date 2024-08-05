@@ -16,9 +16,6 @@ Sidekiq.configure_server do |config|
   end
 end
 
-require 'sidekiq/web'
-Sidekiq::Web.app_url = '/'
-
 class EmptyWorker
   include Sidekiq::Worker
 
@@ -34,3 +31,5 @@ class TimedWorker
     puts "Latency: #{now - start} sec"
   end
 end
+
+Sidekiq::Extensions.enable_delay!

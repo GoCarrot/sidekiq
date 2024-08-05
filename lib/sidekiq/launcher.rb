@@ -1,4 +1,3 @@
-# encoding: utf-8
 # frozen_string_literal: true
 require 'sidekiq/manager'
 require 'sidekiq/fetch'
@@ -13,6 +12,8 @@ module Sidekiq
     include Util
 
     attr_accessor :manager, :poller, :fetcher
+
+    STATS_TTL = 5*365*24*60*60
 
     def initialize(options)
       @manager = Sidekiq::Manager.new(options)
@@ -39,7 +40,7 @@ module Sidekiq
     # return until all work is complete and cleaned up.
     # It can take up to the timeout to complete.
     def stop
-      deadline = Time.now + @options[:timeout]
+      deadline = ::Process.clock_gettime(::Process::CLOCK_MONOTONIC) + @options[:timeout]
 
       @done = true
       @manager.quiet
@@ -61,8 +62,6 @@ module Sidekiq
 
     private unless $TESTING
 
-    JVM_RESERVED_SIGNALS = ['USR1', 'USR2'] # Don't Process#kill if we get these signals via the API
-
     def heartbeat
       results = Sidekiq::CLI::PROCTITLES.map {|x| x.(self, to_data) }
       results.compact!
@@ -75,19 +74,24 @@ module Sidekiq
       key = identity
       fails = procd = 0
       begin
-        Processor::FAILURE.update {|curr| fails = curr; 0 }
-        Processor::PROCESSED.update {|curr| procd = curr; 0 }
+        fails = Processor::FAILURE.reset
+        procd = Processor::PROCESSED.reset
+        curstate = Processor::WORKER_STATE.dup
 
-        workers_key = "#{key}:workers".freeze
-        nowdate = Time.now.utc.strftime("%Y-%m-%d".freeze)
+        workers_key = "#{key}:workers"
+        nowdate = Time.now.utc.strftime("%Y-%m-%d")
         Sidekiq.redis do |conn|
           conn.multi do
-            conn.incrby("stat:processed".freeze, procd)
+            conn.incrby("stat:processed", procd)
             conn.incrby("stat:processed:#{nowdate}", procd)
-            conn.incrby("stat:failed".freeze, fails)
+            conn.expire("stat:processed:#{nowdate}", STATS_TTL)
+
+            conn.incrby("stat:failed", fails)
             conn.incrby("stat:failed:#{nowdate}", fails)
+            conn.expire("stat:failed:#{nowdate}", STATS_TTL)
+
             conn.del(workers_key)
-            Processor::WORKER_STATE.each_pair do |tid, hash|
+            curstate.each_pair do |tid, hash|
               conn.hset(workers_key, tid, Sidekiq.dump_json(hash))
             end
             conn.expire(workers_key, 60)
@@ -99,7 +103,7 @@ module Sidekiq
           conn.multi do
             conn.sadd('processes', key)
             conn.exists(key)
-            conn.hmset(key, 'info', to_json, 'busy', Processor::WORKER_STATE.size, 'beat', Time.now.to_f, 'quiet', @done)
+            conn.hmset(key, 'info', to_json, 'busy', curstate.size, 'beat', Time.now.to_f, 'quiet', @done)
             conn.expire(key, 60)
             conn.rpop("#{key}-signals")
           end
@@ -110,17 +114,13 @@ module Sidekiq
 
         return unless msg
 
-        if JVM_RESERVED_SIGNALS.include?(msg)
-          Sidekiq::CLI.instance.handle_signal(msg)
-        else
-          ::Process.kill(msg, $$)
-        end
+        ::Process.kill(msg, $$)
       rescue => e
         # ignore all redis/network issues
         logger.error("heartbeat: #{e.message}")
         # don't lose the counts if there was a network issue
-        Processor::PROCESSED.increment(procd)
-        Processor::FAILURE.increment(fails)
+        Processor::PROCESSED.incr(procd)
+        Processor::FAILURE.incr(fails)
       end
     end
 

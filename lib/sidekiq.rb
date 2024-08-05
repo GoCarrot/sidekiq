@@ -1,13 +1,14 @@
-# encoding: utf-8
 # frozen_string_literal: true
+
 require 'sidekiq/version'
-fail "Sidekiq #{Sidekiq::VERSION} does not support Ruby versions below 2.0.0." if RUBY_PLATFORM != 'java' && RUBY_VERSION < '2.0.0'
+fail "Sidekiq #{Sidekiq::VERSION} does not support Ruby versions below 2.2.2." if RUBY_PLATFORM != 'java' && Gem::Version.new(RUBY_VERSION) < Gem::Version.new('2.2.2')
 
 require 'sidekiq/logging'
 require 'sidekiq/client'
 require 'sidekiq/worker'
 require 'sidekiq/redis_connection'
 require 'sidekiq/backends/redis'
+require 'sidekiq/delay'
 
 require 'json'
 
@@ -18,13 +19,14 @@ module Sidekiq
   DEFAULTS = {
     queues: [],
     labels: [],
-    concurrency: 25,
+    concurrency: 10,
     require: '.',
     environment: nil,
     timeout: 8,
     poll_interval_average: nil,
-    average_scheduled_poll_interval: 15,
+    average_scheduled_poll_interval: 5,
     error_handlers: [],
+    death_handlers: [],
     lifecycle_events: {
       startup: [],
       quiet: [],
@@ -34,7 +36,6 @@ module Sidekiq
     dead_max_jobs: 10_000,
     dead_timeout_in_seconds: 180 * 24 * 60 * 60, # 6 months
     reloader: proc { |&block| block.call },
-    executor: proc { |&block| block.call },
   }
 
   DEFAULT_WORKER_OPTIONS = {
@@ -48,7 +49,7 @@ module Sidekiq
     "connected_clients" => "9999",
     "used_memory_human" => "9P",
     "used_memory_peak_human" => "9P"
-  }.freeze
+  }
 
   def self.❨╯°□°❩╯︵┻━┻
     puts "Calm down, yo."
@@ -57,6 +58,7 @@ module Sidekiq
   def self.options
     @options ||= DEFAULTS.dup
   end
+
   def self.options=(opts)
     @options = opts
   end
@@ -95,8 +97,8 @@ module Sidekiq
       begin
         yield conn
       rescue Redis::CommandError => ex
-        #2550 Failover can cause the server to become a slave, need
-        # to disconnect and reopen the socket to get back to the master.
+        #2550 Failover can cause the server to become a replica, need
+        # to disconnect and reopen the socket to get back to the primary.
         (conn.disconnect!; retryable = false; retry) if retryable && ex.message =~ /READONLY/
         raise
       end
@@ -146,32 +148,34 @@ module Sidekiq
   end
 
   def self.default_server_middleware
-    require 'sidekiq/middleware/server/retry_jobs'
-    require 'sidekiq/middleware/server/logging'
-
-    Middleware::Chain.new do |m|
-      m.add Middleware::Server::Logging
-      m.add Middleware::Server::RetryJobs
-    end
+    Middleware::Chain.new
   end
 
   def self.default_worker_options=(hash)
-    @default_worker_options = default_worker_options.merge(hash.stringify_keys)
+    # stringify
+    @default_worker_options = default_worker_options.merge(Hash[hash.map{|k, v| [k.to_s, v]}])
   end
   def self.default_worker_options
     defined?(@default_worker_options) ? @default_worker_options : DEFAULT_WORKER_OPTIONS
   end
 
+  def self.default_retries_exhausted=(prok)
+    logger.info { "default_retries_exhausted is deprecated, please use `config.death_handlers << -> {|job, ex| }`" }
+    return nil unless prok
+    death_handlers << prok
+  end
+
+  ##
+  # Death handlers are called when all retries for a job have been exhausted and
+  # the job dies.  It's the notification to your application
+  # that this job will not succeed without manual intervention.
+  #
   # Sidekiq.configure_server do |config|
-  #   config.default_retries_exhausted = -> (job, ex) do
+  #   config.death_handlers << ->(job, ex) do
   #   end
   # end
-  def self.default_retries_exhausted=(prok)
-    @default_retries_exhausted = prok
-  end
-  @default_retries_exhausted = ->(job, ex) { }
-  def self.default_retries_exhausted
-    @default_retries_exhausted
+  def self.death_handlers
+    options[:death_handlers]
   end
 
   def self.load_json(string)
@@ -229,10 +233,6 @@ module Sidekiq
   # otherwise Ruby's Thread#kill will commit.  See #377.
   # DO NOT RESCUE THIS ERROR IN YOUR WORKERS
   class Shutdown < Interrupt; end
-
 end
 
-require 'sidekiq/extensions/class_methods'
-require 'sidekiq/extensions/action_mailer'
-require 'sidekiq/extensions/active_record'
 require 'sidekiq/rails' if defined?(::Rails::Engine)

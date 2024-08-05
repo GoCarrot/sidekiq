@@ -4,9 +4,24 @@ module Sidekiq
   class WebApplication
     extend WebRouter
 
-    CONTENT_LENGTH = "Content-Length".freeze
-    CONTENT_TYPE = "Content-Type".freeze
+    CONTENT_LENGTH = "Content-Length"
+    CONTENT_TYPE = "Content-Type"
     REDIS_KEYS = %w(redis_version uptime_in_days connected_clients used_memory_human used_memory_peak_human)
+    CSP_HEADER = [
+      "default-src 'self' https: http:",
+      "child-src 'self'",
+      "connect-src 'self' https: http: wss: ws:",
+      "font-src 'self' https: http:",
+      "frame-src 'self'",
+      "img-src 'self' https: http: data:",
+      "manifest-src 'self'",
+      "media-src 'self'",
+      "object-src 'none'",
+      "script-src 'self' https: http: 'unsafe-inline'",
+      "style-src 'self' https: http: 'unsafe-inline'",
+      "worker-src 'self'",
+      "base-uri 'self'"
+    ].join('; ').freeze
 
     def initialize(klass)
       @klass = klass
@@ -85,7 +100,7 @@ module Sidekiq
       name = route_params[:name]
       Sidekiq::Job.new(params['key_val'], name).delete
 
-      redirect_with_query("#{root_path}queues/#{name}")
+      redirect_with_query("#{root_path}queues/#{CGI.escape(name)}")
     end
 
     get '/morgue' do
@@ -181,6 +196,12 @@ module Sidekiq
       redirect "#{root_path}retries"
     end
 
+    post "/retries/all/kill" do
+      Sidekiq::RetrySet.new.kill_all
+
+      redirect "#{root_path}retries"
+    end
+
     post "/retries/:key" do
       job = Sidekiq::RetrySet.new.fetch(*parse_params(route_params[:key])).first
 
@@ -234,7 +255,6 @@ module Sidekiq
     get '/stats' do
       sidekiq_stats = Sidekiq::Stats.new
       redis_stats   = redis_info.select { |k, v| REDIS_KEYS.include? k }
-
       json(
         sidekiq: {
           processed:       sidekiq_stats.processed,
@@ -247,7 +267,8 @@ module Sidekiq
           dead:            sidekiq_stats.dead_size,
           default_latency: sidekiq_stats.default_queue_latency
         },
-        redis: redis_stats
+        redis: redis_stats,
+        server_utc_time: server_utc_time
       )
     end
 
@@ -274,19 +295,15 @@ module Sidekiq
       resp = case resp
       when Array
         resp
-      when Fixnum
-        [resp, {}, []]
       else
-        type_header = case action.type
-        when :json
-          { "Content-Type" => "application/json", "Cache-Control" => "no-cache" }
-        when String
-          { "Content-Type" => action.type, "Cache-Control" => "no-cache" }
-        else
-          { "Content-Type" => "text/html", "Cache-Control" => "no-cache" }
-        end
+        headers = {
+          "Content-Type" => "text/html",
+          "Cache-Control" => "no-cache",
+          "Content-Language" => action.locale,
+          "Content-Security-Policy" => CSP_HEADER
+        }
 
-        [200, type_header, [resp]]
+        [200, headers, [resp]]
       end
 
       resp[1] = resp[1].dup

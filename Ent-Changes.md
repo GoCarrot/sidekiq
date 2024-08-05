@@ -1,13 +1,94 @@
-Sidekiq Enterprise Changelog
-=======================
+# Sidekiq Enterprise Changelog
+
+[Sidekiq Changes](https://github.com/mperham/sidekiq/blob/master/Changes.md) | [Sidekiq Pro Changes](https://github.com/mperham/sidekiq/blob/master/Pro-Changes.md) | [Sidekiq Enterprise Changes](https://github.com/mperham/sidekiq/blob/master/Ent-Changes.md)
 
 Please see [http://sidekiq.org/](http://sidekiq.org/) for more details and how to buy.
 
-HEAD
+1.8.1
+-------------
+
+- Fix excessive lock reclaims with concurrent limiter [#4105]
+- Add ES translations, see issues [#3949](https://github.com/mperham/sidekiq/issues/3949) and [#3951](https://github.com/mperham/sidekiq/issues/3951) to add your own language.
+
+1.8.0
+-------------
+
+- Require Sidekiq Pro 4.0 and Sidekiq 5.2.
+- Refactor historical metrics API to use revamped Statsd support in Sidekiq Pro
+- Add a gauge to historical metrics for `default` queue latency [#4079]
+
+1.7.2
+-------------
+
+- Add PT and JA translations
+- Fix elapsed time calculations to use monotonic clock [#4000, sj26]
+- Fix edge case where flapping leadership would cause old periodic
+  jobs to be fired once [#3974]
+- Add support for sidekiqswarm memory monitoring on FreeBSD [#3884]
+
+1.7.1
+-------------
+
+- Fix Lua error in concurrent rate limiter under heavy contention
+- Remove superfluous `freeze` calls on Strings [#3759]
+
+1.7.0
+-------------
+
+- **NEW FEATURE** [Rolling restarts](https://github.com/mperham/sidekiq/wiki/Ent-Rolling-Restarts) - great for long running jobs!
+- Adjust middleware so unique jobs that don't push aren't registered in a Batch [#3662]
+- Add new unlimited rate limiter, useful for testing [#3743]
+```ruby
+limiter = Sidekiq::Limiter.unlimited(...any args...)
+```
+
+1.6.1
+-------------
+
+- Fix crash in rate limiter middleware when used with custom exceptions [#3604]
+
+1.6.0
+-------------
+
+- Show process "leader" tag on Busy page, requires Sidekiq 5.0.2 [#2867]
+- Capture custom metrics with the `save_history` API. [#2815]
+- Implement new `unique_until: 'start'` policy option. [#3471]
+
+1.5.4
+-------------
+
+- Fix broken Cron page in Web UI [#3458]
+
+1.5.3
+-------------
+
+- Remove dependency on the algorithms gem [#3446]
+- Allow user to specify max memory in megabytes with SIDEKIQ\_MAXMEM\_MB [#3451]
+- Implement logic to detect app startup failure, sidekiqswarm will exit
+  rather than try to restart the app forever [#3450]
+- Another fix for doubly-encrypted arguments [#3368]
+
+1.5.2
+-------------
+
+- Fix encrypted arguments double-encrypted by retry or rate limiting [#3368]
+- Fix leak in concurrent rate limiter, run this in Rails console to clean up existing data [#3323]
+```ruby
+expiry = 1.month.to_i; Sidekiq::Limiter.redis { |c| c.scan_each(match: "lmtr-cfree-*") { |key| c.expire(key, expiry) } }
+```
+
+1.5.1
+-------------
+
+- Fix issue with census startup when not using Bundler configuration for
+  source credentials.
+
+1.5.0
 -------------
 
 - Add new web authorization API [#3251]
 - Update all sidekiqswarm env vars to use SIDEKIQ\_ prefix [#3218]
+- Add census reporting, the leader will ping contribsys nightly with aggregate usage metrics
 
 1.4.0
 -------------

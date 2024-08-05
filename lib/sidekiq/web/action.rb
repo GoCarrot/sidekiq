@@ -2,7 +2,7 @@
 
 module Sidekiq
   class WebAction
-    RACK_SESSION = 'rack.session'.freeze
+    RACK_SESSION = 'rack.session'
 
     attr_accessor :env, :block, :type
 
@@ -37,10 +37,6 @@ module Sidekiq
 
     def session
       env[RACK_SESSION]
-    end
-
-    def content_type(type)
-      @type = type
     end
 
     def erb(content, options = {})
@@ -81,7 +77,7 @@ module Sidekiq
     private
 
     def _erb(file, locals)
-      locals.each {|k, v| define_singleton_method(k){ v } } if locals
+      locals.each {|k, v| define_singleton_method(k){ v } unless (singleton_methods.include? k)} if locals
 
       if file.kind_of?(String)
         ERB.new(file).result(binding)
